@@ -1,10 +1,17 @@
 {
     "llama2-7b-chat-4k": 3500,
+    "llama3-8b-8k": 7500,
+    "llama3-8b-ift-1e-5": 4000,
+    "llama3-8b-ift-2e-5": 4000,
+    "llama3-8b-ift-5e-6": 4000,
+    "llama3_8b_instruct_ift_2e-5_dynamic": 16000,
+    "llama3_8b_instruct_ift_2e-5_linear": 16000,
     "longchat-v1.5-7b-32k": 31500,
     "xgen-7b-8k": 7500,
     "internlm-7b-8k": 7500,
     "chatglm2-6b": 31500,
     "chatglm2-6b-32k": 31500,
     "chatglm3-6b-32k": 31500,
-    "vicuna-v1.5-7b-16k": 15500
+    "vicuna-v1.5-7b-16k": 15500,
+    "gpt-4o": 128000
 }

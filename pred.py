@@ -10,11 +10,19 @@ import argparse
 from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from llmlingua import PromptCompressor 
+from openai import OpenAI
+
+GPT_MODEL = 'gpt-4o' #todo: try gpt-4o
+api_key = 'sk-proj-GjnGAFyfjeEi2nbpZtq2T3BlbkFJqk8m4pdmyxJi7zJrIIDk' #TODO: do secrets manager later
+
+USE_MAX_GEN = True 
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default=None, choices=["llama2-7b-chat-4k", "longchat-v1.5-7b-32k", "xgen-7b-8k", "internlm-7b-8k", "chatglm2-6b", "chatglm2-6b-32k", "chatglm3-6b-32k", "vicuna-v1.5-7b-16k"])
+    parser.add_argument('--model', type=str, default=None, choices=["llama2-7b-chat-4k", "llama3-8b-8k", "llama3-8b-ift-1e-5", "llama3-8b-ift-2e-5", "llama3-8b-ift-5e-6", "llama3_8b_instruct_ift_2e-5_dynamic", "llama3_8b_instruct_ift_2e-5_linear", "longchat-v1.5-7b-32k", "xgen-7b-8k", "internlm-7b-8k", "chatglm2-6b", "chatglm2-6b-32k", "chatglm3-6b-32k", "vicuna-v1.5-7b-16k", "gpt-4o"])
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
+    parser.add_argument('--compress_prompt', action='store_true', help="Use LLMLingua2 prompt compressor")
     return parser.parse_args(args)
 
 # This is the customized building prompt for chat models
@@ -31,6 +39,8 @@ def build_chat(tokenizer, prompt, model_name):
         prompt = conv.get_prompt()
     elif "llama2" in model_name:
         prompt = f"[INST]{prompt}[/INST]"
+    elif "llama3" in model_name:
+        pass
     elif "xgen" in model_name:
         header = (
             "A chat between a curious human and an artificial intelligence assistant. "
@@ -48,51 +58,118 @@ def post_process(response, model_name):
         response = response.split("<eoa>")[0]
     return response
 
-def get_pred(rank, world_size, data, max_length, max_gen, prompt_format, dataset, device, model_name, model2path, out_path):
+def get_pred(rank, world_size, data, max_length, max_gen, prompt_format, dataset, device, model_name, model2path, out_path, compress_prompt=False):
     device = torch.device(f'cuda:{rank}')
     model, tokenizer = load_model_and_tokenizer(model2path[model_name], model_name, device)
     for json_obj in tqdm(data):
         prompt = prompt_format.format(**json_obj)
+        # print(prompt)
+        # compress prompt if enabled
+        if compress_prompt:
+            # print("prompt compression enabled")
+            llm_lingua = PromptCompressor(
+                model_name="microsoft/llmlingua-2-xlm-roberta-large-meetingbank",
+                use_llmlingua2=True, # Whether to use llmlingua-2
+            )
+            prompt = llm_lingua.compress_prompt(prompt, rate=0.5, force_tokens = ['\n', '?'])['compressed_prompt']
+            # print("successfully compressed the prompt")
+            # print(prompt)
         # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
-        tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
-        if "chatglm3" in model_name:
-            tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt", add_special_tokens=False).input_ids[0]
-        if len(tokenized_prompt) > max_length:
+        if model_name.startswith("gpt"):
+            tokenized_prompt = prompt
+        else:
+            tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
+            if "chatglm3" in model_name:
+                tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt", add_special_tokens=False).input_ids[0]
+        if not model_name.startswith("gpt") and len(tokenized_prompt) > max_length:
             half = int(max_length/2)
             prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True)+tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
         if dataset not in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]: # chat models are better off without build prompts on these tasks
             prompt = build_chat(tokenizer, prompt, model_name)
-        if "chatglm3" in model_name:
-            if dataset in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]:
-                input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
+
+        if model_name.startswith("gpt"):
+            client = OpenAI(api_key=api_key)
+            chat_completion = client.chat.completions.create(
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                model=GPT_MODEL,
+            )
+            pred = chat_completion.choices[0].message.content
+        else:
+            if "chatglm3" in model_name:
+                if dataset in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]:
+                    input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
+                else:
+                    input = prompt.to(device)
+            elif "llama3" in model_name:
+                messages = [
+                    {"role": "user", "content": prompt},
+                ]
+                input = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(model.device)
             else:
-                input = prompt.to(device)
-        else:
-            input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
-        context_length = input.input_ids.shape[-1]
-        if dataset == "samsum": # prevent illegal output on samsum (model endlessly repeat "\nDialogue"), might be a prompting issue
-            output = model.generate(
-                **input,
-                max_new_tokens=max_gen,
-                num_beams=1,
-                do_sample=False,
-                temperature=1.0,
-                min_length=context_length+1,
-                eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
-            )[0]
-        else:
-            output = model.generate(
-                **input,
-                max_new_tokens=max_gen,
-                num_beams=1,
-                do_sample=False,
-                temperature=1.0,
-            )[0]
-        pred = tokenizer.decode(output[context_length:], skip_special_tokens=True)
-        pred = post_process(pred, model_name)
+                input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
+            if "llama3" in model_name:
+                context_length = input.shape[-1]
+            else:
+                context_length = input.input_ids.shape[-1]
+        # print("max_gen: ", max_gen)
+        # print("max_length: ", max_length)
+            if dataset == "samsum": # prevent illegal output on samsum (model endlessly repeat "\nDialogue"), might be a prompting issue
+                if "llama3" in model_name:
+                    output = model.generate(
+                        input,
+                        max_new_tokens=max_gen,
+                        num_beams=1,
+                        do_sample=False,
+                        temperature=1.0,
+                        min_length=context_length+1,
+                        eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
+                    )[0]
+                else:
+                    output = model.generate(
+                        **input,
+                        max_new_tokens=max_gen,
+                        num_beams=1,
+                        do_sample=False,
+                        temperature=1.0,
+                        min_length=context_length+1,
+                        eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
+                    )[0]
+            else:
+                if "llama3" in model_name:
+                    if USE_MAX_GEN:
+                        output = model.generate(
+                            input,
+                            max_new_tokens=max_gen,
+                            num_beams=1,
+                            do_sample=False,
+                            temperature=1.0,
+                        )[0]
+                    else:
+                        output = model.generate(
+                            input,
+                            num_beams=1,
+                            do_sample=False,
+                            temperature=1.0,
+                        )[0]
+                else:
+                    output = model.generate(
+                        **input,
+                        max_new_tokens=max_gen,
+                        num_beams=1,
+                        do_sample=False,
+                        temperature=1.0,
+                    )[0]
+            pred = tokenizer.decode(output[context_length:], skip_special_tokens=True)
+            pred = post_process(pred, model_name)
         with open(out_path, "a", encoding="utf-8") as f:
             json.dump({"pred": pred, "answers": json_obj["answers"], "all_classes": json_obj["all_classes"], "length": json_obj["length"]}, f, ensure_ascii=False)
             f.write('\n')
+    # try:
+    #     dist.destroy_process_group()
+    # except AssertionError as e:
+    #     print(f"AssertionError in destroy_process_group: {e}")
     dist.destroy_process_group()
 
 def seed_everything(seed):
@@ -105,13 +182,20 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)
 
 def load_model_and_tokenizer(path, model_name, device):
-    if "chatglm" in model_name or "internlm" in model_name or "xgen" in model_name:
+    if model_name.startswith("gpt"):
+        tokenizer = None
+        model = None
+    elif "chatglm" in model_name or "internlm" in model_name or "xgen" in model_name:
         tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True, torch_dtype=torch.bfloat16).to(device)
     elif "llama2" in model_name:
         replace_llama_attn_with_flash_attn()
         tokenizer = LlamaTokenizer.from_pretrained(path)
         model = LlamaForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16).to(device)
+    elif "llama3" in model_name:
+        #replace_llama_attn_with_flash_attn()
+        tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
+        model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16).to(device)
     elif "longchat" in model_name or "vicuna" in model_name:
         from fastchat.model import load_model
         replace_llama_attn_with_flash_attn()
@@ -126,7 +210,8 @@ def load_model_and_tokenizer(path, model_name, device):
         model = model.to(device)
         model = model.bfloat16()
         tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, use_fast=False)
-    model = model.eval()
+    if model is not None:
+        model = model.eval()
     return model, tokenizer
 
 if __name__ == '__main__':
@@ -138,12 +223,20 @@ if __name__ == '__main__':
     model2path = json.load(open("config/model2path.json", "r"))
     model2maxlen = json.load(open("config/model2maxlen.json", "r"))
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    #use prompt compression or not
+    if args.compress_prompt:
+        compress_prompt = True
+    else:
+        compress_prompt = False
     model_name = args.model
     # define your model
     max_length = model2maxlen[model_name]
     if args.e:
-        datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
+        # datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
+        #     "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
+        datasets = ["gov_report", "multi_news", \
             "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
+        #datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
     else:
         datasets = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
                     "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
@@ -159,10 +252,16 @@ if __name__ == '__main__':
     for dataset in datasets:
         if args.e:
             data = load_dataset('THUDM/LongBench', f"{dataset}_e", split='test')
-            if not os.path.exists(f"pred_e/{model_name}"):
-                os.makedirs(f"pred_e/{model_name}")
-            out_path = f"pred_e/{model_name}/{dataset}.jsonl"
+            if compress_prompt:
+                if not os.path.exists(f"pred_e/{model_name}+LLMLingua2"):
+                    os.makedirs(f"pred_e/{model_name}+LLMLingua2")
+                out_path = f"pred_e/{model_name}+LLMLingua2/{dataset}.jsonl"
+            else:
+                if not os.path.exists(f"pred_e/{model_name}"):
+                    os.makedirs(f"pred_e/{model_name}")
+                out_path = f"pred_e/{model_name}/{dataset}.jsonl"
         else:
+            # TODO: update this 
             data = load_dataset('THUDM/LongBench', dataset, split='test')
             if not os.path.exists(f"pred/{model_name}"):
                 os.makedirs(f"pred/{model_name}")
@@ -174,7 +273,7 @@ if __name__ == '__main__':
         processes = []
         for rank in range(world_size):
             p = mp.Process(target=get_pred, args=(rank, world_size, data_subsets[rank], max_length, \
-                        max_gen, prompt_format, dataset, device, model_name, model2path, out_path))
+                        max_gen, prompt_format, dataset, device, model_name, model2path, out_path, compress_prompt))
             p.start()
             processes.append(p)
         for p in processes:

@@ -43,6 +43,7 @@ def parse_args(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default=None)
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
+    parser.add_argument('--compress_prompt', action='store_true', help="With LLMLingua2 prompt compressor")
     return parser.parse_args(args)
 
 def scorer_e(dataset, predictions, answers, lengths, all_classes):
@@ -78,8 +79,12 @@ if __name__ == '__main__':
     args = parse_args()
     scores = dict()
     if args.e:
-        path = f"pred_e/{args.model}/"
+        if args.compress_prompt:
+            path = f"pred_e/{args.model}+LLMLingua2/"
+        else:
+            path = f"pred_e/{args.model}/"
     else:
+        #TODO: add prompt compress
         path = f"pred/{args.model}/"
     all_files = os.listdir(path)
     print("Evaluating on:", all_files)
@@ -102,8 +107,9 @@ if __name__ == '__main__':
             score = scorer(dataset, predictions, answers, all_classes)
         scores[dataset] = score
     if args.e:
-        out_path = f"pred_e/{args.model}/result.json"
-    else:
-        out_path = f"pred/{args.model}/result.json"
+        if args.compress_prompt:
+            out_path = f"pred_e/{args.model}+LLMLingua2/result.json"
+        else:
+            out_path = f"pred_e/{args.model}/result.json"
     with open(out_path, "w") as f:
         json.dump(scores, f, ensure_ascii=False, indent=4)
