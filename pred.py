@@ -14,7 +14,7 @@ from llmlingua import PromptCompressor
 from openai import OpenAI
 
 GPT_MODEL = 'gpt-4o' #todo: try gpt-4o
-api_key = 'sk-proj-GjnGAFyfjeEi2nbpZtq2T3BlbkFJqk8m4pdmyxJi7zJrIIDk' #TODO: do secrets manager later
+api_key = 'FAKE' #TODO: do secrets manager later
 
 USE_MAX_GEN = True 
 
