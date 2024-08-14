@@ -7,7 +7,7 @@ from tqdm import tqdm
 import numpy as np
 import random
 import argparse
-from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
+#from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from llmlingua import PromptCompressor 
@@ -20,7 +20,7 @@ USE_MAX_GEN = True
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default=None, choices=["llama2-7b-chat-4k", "llama3-8b-8k", "llama3-8b-ift-1e-5", "llama3-8b-ift-2e-5", "llama3-8b-ift-5e-6", "llama3_8b_instruct_ift_2e-5_dynamic", "llama3_8b_instruct_ift_2e-5_linear", "longchat-v1.5-7b-32k", "xgen-7b-8k", "internlm-7b-8k", "chatglm2-6b", "chatglm2-6b-32k", "chatglm3-6b-32k", "vicuna-v1.5-7b-16k", "gpt-4o"])
+    parser.add_argument('--model', type=str, default=None, choices=["llama2-7b-chat-4k", "llama3-8b-8k", "llama3-8b-ift-1e-5", "llama3-8b-ift-2e-5", "llama3-8b-ift-5e-6", "llama3_8b_instruct_ift_2e-5_dynamic", "llama3_8b_instruct_ift_2e-5_linear", "llama3.1_8b_instruct", "llama3.1_70b_instruct","longchat-v1.5-7b-32k", "xgen-7b-8k", "internlm-7b-8k", "chatglm2-6b", "chatglm2-6b-32k", "chatglm3-6b-32k", "vicuna-v1.5-7b-16k", "gpt-4o"])
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
     parser.add_argument('--compress_prompt', action='store_true', help="Use LLMLingua2 prompt compressor")
     return parser.parse_args(args)
@@ -189,7 +189,7 @@ def load_model_and_tokenizer(path, model_name, device):
         tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True, torch_dtype=torch.bfloat16).to(device)
     elif "llama2" in model_name:
-        replace_llama_attn_with_flash_attn()
+        #replace_llama_attn_with_flash_attn()
         tokenizer = LlamaTokenizer.from_pretrained(path)
         model = LlamaForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16).to(device)
     elif "llama3" in model_name:
@@ -198,7 +198,7 @@ def load_model_and_tokenizer(path, model_name, device):
         model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16).to(device)
     elif "longchat" in model_name or "vicuna" in model_name:
         from fastchat.model import load_model
-        replace_llama_attn_with_flash_attn()
+        #replace_llama_attn_with_flash_attn()
         model, _ = load_model(
             path,
             device='cpu',
@@ -232,10 +232,10 @@ if __name__ == '__main__':
     # define your model
     max_length = model2maxlen[model_name]
     if args.e:
-        # datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
-        #     "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
-        datasets = ["gov_report", "multi_news", \
+        datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
             "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
+        # datasets = ["gov_report", "multi_news", \
+        #     "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
         #datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
     else:
         datasets = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
