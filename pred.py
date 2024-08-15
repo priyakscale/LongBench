@@ -20,7 +20,10 @@ USE_MAX_GEN = True
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default=None, choices=["llama2-7b-chat-4k", "llama3-8b-8k", "llama3-8b-ift-1e-5", "llama3-8b-ift-2e-5", "llama3-8b-ift-5e-6", "llama3_8b_instruct_ift_2e-5_dynamic", "llama3_8b_instruct_ift_2e-5_linear", "llama3.1_8b_instruct", "llama3.1_70b_instruct","longchat-v1.5-7b-32k", "xgen-7b-8k", "internlm-7b-8k", "chatglm2-6b", "chatglm2-6b-32k", "chatglm3-6b-32k", "vicuna-v1.5-7b-16k", "gpt-4o"])
+    with open('config/model2path.json', 'r') as f:
+        model2path = json.load(f)
+    model_choices = list(model2path.keys())
+    parser.add_argument('--model', type=str, default=None, choices=model_choices)
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
     parser.add_argument('--compress_prompt', action='store_true', help="Use LLMLingua2 prompt compressor")
     return parser.parse_args(args)
