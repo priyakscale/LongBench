@@ -13,8 +13,8 @@ import torch.multiprocessing as mp
 from llmlingua import PromptCompressor 
 from openai import OpenAI
 
-GPT_MODEL = 'gpt-4o' #todo: try gpt-4o
-api_key = 'FAKE' #TODO: do secrets manager later
+GPT_MODEL = 'gpt-4o' #todo: add options to change this
+api_key = os.getenv("OPENAI_API_KEY")
 
 USE_MAX_GEN = True 
 

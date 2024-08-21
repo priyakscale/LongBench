@@ -111,5 +111,6 @@ if __name__ == '__main__':
             out_path = f"pred_e/{args.model}+LLMLingua2/result.json"
         else:
             out_path = f"pred_e/{args.model}/result.json"
+    print(f"Writing scores to {out_path}")
     with open(out_path, "w") as f:
         json.dump(scores, f, ensure_ascii=False, indent=4)
