@@ -4,7 +4,7 @@ import numpy as np
 import time
 
 # Initialize OpenAI client
-client = OpenAI(api_key="sk-svcacct-3hvIVW8x7bx59eegJCv6T3BlbkFJevtK2uhr7pu2GA1f8f5m")
+client = OpenAI(api_key="FAKE")
 
 def make_gpt_request_with_retry(prompt: str, client, max_retries: int = 5, initial_wait: int = 2):
     retry_count = 0
