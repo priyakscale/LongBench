@@ -13,5 +13,9 @@
     "chatglm2-6b-32k": "THUDM/chatglm2-6b-32k",
     "chatglm3-6b-32k": "THUDM/chatglm3-6b-32k",
     "vicuna-v1.5-7b-16k": "lmsys/vicuna-7b-v1.5-16k",
-    "gpt-4o": "gpt-4o"
+    "gpt-4o": "gpt-4o",
+    "llama3.1_8b_instruct_128k": "/mnt/efs/priyakhandelwal/checkpoints/ift_llama_3.1_8b_instruct_128k/model",
+    "llama3.1_8b_instruct": "/mnt/efs/priyakhandelwal/base_models/Meta-Llama-3.1-8B-Instruct",
+    "mistral-7B-Instruct": "mistralai/Mistral-7B-Instruct-v0.3",
+    "mistral-7B-Instruct-ift": "/mnt/efs/priyakhandelwal/checkpoints/ift_mistral_7b_instruct_32k/model"
 }

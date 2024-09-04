@@ -44,6 +44,9 @@ def parse_args(args=None):
     parser.add_argument('--model', type=str, default=None)
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
     parser.add_argument('--compress_prompt', action='store_true', help="With LLMLingua2 prompt compressor")
+    parser.add_argument('--use_rag', action='store_true', help="Use RAG")
+    parser.add_argument('--use_rag_advanced', action='store_true', help="Use RAG advanced")
+    parser.add_argument('--k', type=int, default=50, help="How many chunks for RAG")
     return parser.parse_args(args)
 
 def scorer_e(dataset, predictions, answers, lengths, all_classes):
@@ -85,7 +88,12 @@ if __name__ == '__main__':
             path = f"pred_e/{args.model}/"
     else:
         #TODO: add prompt compress
-        path = f"pred/{args.model}/"
+        if args.use_rag:
+            path = f"pred/{args.model}_rag_naive_{args.k}/"
+        elif args.use_rag_advanced:
+            path = f"pred/{args.model}_rag_advanced_{args.k}/"
+        else:
+            path = f"pred/{args.model}/"
     all_files = os.listdir(path)
     print("Evaluating on:", all_files)
     for filename in all_files:
@@ -111,5 +119,13 @@ if __name__ == '__main__':
             out_path = f"pred_e/{args.model}+LLMLingua2/result.json"
         else:
             out_path = f"pred_e/{args.model}/result.json"
+    else:
+        if args.use_rag:
+            out_path = f"pred/{args.model}_rag_naive_{args.k}/result.json"
+        elif args.use_rag_advanced:
+            out_path = f"pred/{args.model}_rag_advanced_{args.k}/result.json"
+        else:
+            out_path = f"pred/{args.model}/result.json"
+        
     with open(out_path, "w") as f:
         json.dump(scores, f, ensure_ascii=False, indent=4)

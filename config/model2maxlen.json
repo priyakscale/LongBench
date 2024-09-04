@@ -13,5 +13,9 @@
     "chatglm2-6b-32k": 31500,
     "chatglm3-6b-32k": 31500,
     "vicuna-v1.5-7b-16k": 15500,
-    "gpt-4o": 128000
+    "gpt-4o": 128000,
+    "llama3.1_8b_instruct_128k": 128000,
+    "llama3.1_8b_instruct": 128000,
+    "mistral-7B-Instruct": 32768,
+    "mistral-7B-Instruct-ift": 32768
 }

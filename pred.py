@@ -8,6 +8,10 @@ import numpy as np
 import random
 import argparse
 from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
+from sentence_transformers import SentenceTransformer
+import faiss
+from rag_module import rag_pipeline
+from rag_module_advanced import prepare_rag_components, rag_pipeline
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from llmlingua import PromptCompressor 
@@ -20,9 +24,12 @@ USE_MAX_GEN = True
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default=None, choices=["llama2-7b-chat-4k", "llama3-8b-8k", "llama3-8b-ift-1e-5", "llama3-8b-ift-2e-5", "llama3-8b-ift-5e-6", "llama3_8b_instruct_ift_2e-5_dynamic", "llama3_8b_instruct_ift_2e-5_linear", "longchat-v1.5-7b-32k", "xgen-7b-8k", "internlm-7b-8k", "chatglm2-6b", "chatglm2-6b-32k", "chatglm3-6b-32k", "vicuna-v1.5-7b-16k", "gpt-4o"])
+    parser.add_argument('--model', type=str, default=None, choices=["llama2-7b-chat-4k", "llama3-8b-8k", "llama3-8b-ift-1e-5", "llama3-8b-ift-2e-5", "llama3-8b-ift-5e-6", "llama3_8b_instruct_ift_2e-5_dynamic", "llama3_8b_instruct_ift_2e-5_linear", "longchat-v1.5-7b-32k", "xgen-7b-8k", "internlm-7b-8k", "chatglm2-6b", "chatglm2-6b-32k", "chatglm3-6b-32k", "vicuna-v1.5-7b-16k", "gpt-4o", "llama3.1_8b_instruct_128k", "llama3.1_8b_instruct", "mistral-7B-Instruct", "mistral-7B-Instruct-ift"])
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
     parser.add_argument('--compress_prompt', action='store_true', help="Use LLMLingua2 prompt compressor")
+    parser.add_argument('--use_rag', action='store_true', help="Use RAG")
+    parser.add_argument('--use_rag_advanced', action='store_true', help="Use RAG")
+    parser.add_argument('--k', type=int, default=50, help="How many chunks for RAG")
     return parser.parse_args(args)
 
 # This is the customized building prompt for chat models
@@ -41,6 +48,8 @@ def build_chat(tokenizer, prompt, model_name):
         prompt = f"[INST]{prompt}[/INST]"
     elif "llama3" in model_name:
         pass
+    elif "mistral" in model_name:
+        pass
     elif "xgen" in model_name:
         header = (
             "A chat between a curious human and an artificial intelligence assistant. "
@@ -58,12 +67,57 @@ def post_process(response, model_name):
         response = response.split("<eoa>")[0]
     return response
 
-def get_pred(rank, world_size, data, max_length, max_gen, prompt_format, dataset, device, model_name, model2path, out_path, compress_prompt=False):
+def get_pred(rank, world_size, data, max_length, max_gen, prompt_format, dataset, device, model_name, model2path, out_path, k, compress_prompt=False, use_rag=False, use_rag_advanced=False):
     device = torch.device(f'cuda:{rank}')
     model, tokenizer = load_model_and_tokenizer(model2path[model_name], model_name, device)
     for json_obj in tqdm(data):
+        if use_rag:
+            print("Providing a RAG input instead of full long context")
+
+            print("Loading SentenceTransformer model for retrieval...")
+            retriever = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+
+            # split context into chunks
+            corpus = []
+            input = json_obj.get('input', '')
+            context = json_obj.get('context', '')
+            chunk_size = 200
+            chunks = []
+            start = 0
+            while start < len(context):
+                end = min(start + chunk_size, len(context))
+                chunks.append(context[start:end])
+                start += chunk_size
+
+            # append chunks to corpus
+            for chunk in chunks:
+                corpus.append(chunk)
+
+            print(f"Corpus prepared with {len(corpus)} items.")
+            corpus_embeddings = retriever.encode(corpus, convert_to_tensor=True)
+
+            embedding_dim = corpus_embeddings.shape[1]
+            print("Building FAISS index for fast retrieval...")
+            index = faiss.IndexFlatL2(embedding_dim)
+            index.add(corpus_embeddings.cpu().numpy())
+
+            components = {
+                'corpus': corpus,
+                'index': index,
+                'retriever': retriever
+            }
+
+            # prompt = rag_pipeline(prompt, components)["input"]
+            context = rag_pipeline(input, components, k)
+            json_obj['context'] = context
+        elif use_rag_advanced:
+            input = json_obj.get('input', '')
+            components = prepare_rag_components(json_obj)
+            context = rag_pipeline(input, components, k)
+            json_obj['context'] = context
+        
         prompt = prompt_format.format(**json_obj)
-        # print(prompt)
+        
         # compress prompt if enabled
         if compress_prompt:
             # print("prompt compression enabled")
@@ -77,10 +131,19 @@ def get_pred(rank, world_size, data, max_length, max_gen, prompt_format, dataset
         # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
         if model_name.startswith("gpt"):
             tokenized_prompt = prompt
+        elif "mistral" in model_name:
+            conversation = [{"role": "user", "content": prompt}]
+            tokenized_prompt = tokenizer.apply_chat_template(
+                conversation,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
         else:
             tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
             if "chatglm3" in model_name:
                 tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt", add_special_tokens=False).input_ids[0]
+        
         if not model_name.startswith("gpt") and len(tokenized_prompt) > max_length:
             half = int(max_length/2)
             prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True)+tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
@@ -107,6 +170,8 @@ def get_pred(rank, world_size, data, max_length, max_gen, prompt_format, dataset
                     {"role": "user", "content": prompt},
                 ]
                 input = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(model.device)
+            elif "mistral" in model_name:
+                input = tokenized_prompt
             else:
                 input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
             if "llama3" in model_name:
@@ -126,6 +191,9 @@ def get_pred(rank, world_size, data, max_length, max_gen, prompt_format, dataset
                         min_length=context_length+1,
                         eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
                     )[0]
+                elif "mistral" in model_name:
+                    input.to(model.device)
+                    output = model.generate(**input, max_new_tokens=max_gen)[0]
                 else:
                     output = model.generate(
                         **input,
@@ -153,6 +221,9 @@ def get_pred(rank, world_size, data, max_length, max_gen, prompt_format, dataset
                             do_sample=False,
                             temperature=1.0,
                         )[0]
+                elif "mistral" in model_name:
+                    input.to(model.device)
+                    output = model.generate(**input, max_new_tokens=max_gen)[0]
                 else:
                     output = model.generate(
                         **input,
@@ -196,6 +267,9 @@ def load_model_and_tokenizer(path, model_name, device):
         #replace_llama_attn_with_flash_attn()
         tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
         model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16).to(device)
+    elif "mistral" in model_name:
+        tokenizer = AutoTokenizer.from_pretrained(path)
+        model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16).to(device)
     elif "longchat" in model_name or "vicuna" in model_name:
         from fastchat.model import load_model
         replace_llama_attn_with_flash_attn()
@@ -223,6 +297,7 @@ if __name__ == '__main__':
     model2path = json.load(open("config/model2path.json", "r"))
     model2maxlen = json.load(open("config/model2maxlen.json", "r"))
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     #use prompt compression or not
     if args.compress_prompt:
         compress_prompt = True
@@ -232,10 +307,12 @@ if __name__ == '__main__':
     # define your model
     max_length = model2maxlen[model_name]
     if args.e:
-        # datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
+        datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
+             "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
+        # datasets = ["gov_report", "multi_news", \
         #     "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
-        datasets = ["gov_report", "multi_news", \
-            "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
+        #datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa"] #TODO: also get gov_report for mistral
+        #datasets = ["gov_report"]
         #datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
     else:
         datasets = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
@@ -243,6 +320,7 @@ if __name__ == '__main__':
                     "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
     # we design specific prompt format and max generation length for each task, feel free to modify them to optimize model output
     dataset2prompt = json.load(open("config/dataset2prompt.json", "r"))
+    dataset2prompt_rag = json.load(open("config/dataset2prompt_rag.json", "r"))
     dataset2maxlen = json.load(open("config/dataset2maxlen.json", "r"))
     # predict on each dataset
     if not os.path.exists("pred"):
@@ -263,17 +341,29 @@ if __name__ == '__main__':
         else:
             # TODO: update this 
             data = load_dataset('THUDM/LongBench', dataset, split='test')
-            if not os.path.exists(f"pred/{model_name}"):
-                os.makedirs(f"pred/{model_name}")
-            out_path = f"pred/{model_name}/{dataset}.jsonl"
-        prompt_format = dataset2prompt[dataset]
+            if args.use_rag:
+                if not os.path.exists(f"pred/{model_name}_rag_naive_{args.k}"):
+                    os.makedirs(f"pred/{model_name}_rag_naive_{args.k}")
+                out_path = f"pred/{model_name}_rag_naive_{args.k}/{dataset}.jsonl"
+            elif args.use_rag_advanced:
+                if not os.path.exists(f"pred/{model_name}_rag_advanced_{args.k}"):
+                    os.makedirs(f"pred/{model_name}_rag_advanced_{args.k}")
+                out_path = f"pred/{model_name}_rag_advanced_{args.k}/{dataset}.jsonl"
+            else:
+                if not os.path.exists(f"pred/{model_name}"):
+                    os.makedirs(f"pred/{model_name}")
+                out_path = f"pred/{model_name}/{dataset}.jsonl"
+        if args.use_rag:
+            prompt_format = dataset2prompt[dataset] #keeping this regular for now
+        else:
+            prompt_format = dataset2prompt[dataset]
         max_gen = dataset2maxlen[dataset]
         data_all = [data_sample for data_sample in data]
         data_subsets = [data_all[i::world_size] for i in range(world_size)]
         processes = []
         for rank in range(world_size):
             p = mp.Process(target=get_pred, args=(rank, world_size, data_subsets[rank], max_length, \
-                        max_gen, prompt_format, dataset, device, model_name, model2path, out_path, compress_prompt))
+                        max_gen, prompt_format, dataset, device, model_name, model2path, out_path, args.k, compress_prompt, args.use_rag, args.use_rag_advanced))
             p.start()
             processes.append(p)
         for p in processes:
