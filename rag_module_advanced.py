@@ -91,11 +91,9 @@ def prepare_rag_components(json_obj):
     input_text = json_obj.get('input', '')
     context = json_obj.get('context', '')
     
-    # Split context into chunks
     chunk_size = 200
     corpus = [context[i:i+chunk_size] for i in range(0, len(context), chunk_size)]
     
-    # Get OpenAI embeddings and create FAISS index
     embeddings = get_openai_embeddings(corpus)
     index = create_faiss_index(embeddings)
 
@@ -106,7 +104,7 @@ def prepare_rag_components(json_obj):
     
     return components
 
-# Example JSON input
+# Test JSON input
 json_obj = {
     'input': 'What is the main idea of the document?',
     'context': '''
@@ -131,7 +129,7 @@ json_obj = {
         fine-tuning on long context with full attention, by
         tuning data, training methods, and evaluating the
         aligned models on a wide range of tasks.
-        '''  # your long context string
+        ''' 
 }
 
 # if __name__ == "__main__":
